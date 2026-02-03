@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Medical Pharmacy Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Variables provided by environment
+        const firebaseConfig = JSON.parse(__firebase_config || '{}');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'medical-pharmacy-app';
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // State Management
+        let user = null;
+        let entries = [];
+        let appSettings = { adminUser: 'mdcpharma', adminPass: 'mdc@123' };
+        let isLoggedIn = false;
+        let isAdminAuthenticated = false;
+        let currentView = 'dashboard';
+        let deleteTargetId = null; // For custom delete modal
+
+        const SUPER_ADMIN = {
+            user: 'fadmin',
+            pass: 'mdc@fardin0415'
+        };
+
+        // --- Auth Logic (Rule 3) ---
+        async function initAuth() {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Authentication failed:", error);
+            }
+
+            onAuthStateChanged(auth, (u) => {
+                user = u;
+                if (user) {
+                    setupDataListeners();
+                }
+            });
+        }
+
+        // --- Data Listeners (Rule 1 & Rule 3) ---
+        let entriesUnsubscribe = null;
+        let settingsUnsubscribe = null;
+
+        function setupDataListeners() {
+            if (!user) return;
+
+            if (entriesUnsubscribe) entriesUnsubscribe();
+            if (settingsUnsubscribe) settingsUnsubscribe();
+
+            const entriesCol = collection(db, 'artifacts', appId, 'public', 'data', 'entries');
+            entriesUnsubscribe = onSnapshot(entriesCol, (snapshot) => {
+                entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                entries.sort((a, b) => new Date(b.date) - new Date(a.date));
+                renderActiveView();
+            }, (err) => {
+                console.error("Entries fetch error:", err);
+            });
+
+            const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+            settingsUnsubscribe = onSnapshot(settingsDoc, (snapshot) => {
+                if (snapshot.exists()) {
+                    appSettings = snapshot.data();
+                } else {
+                    setDoc(settingsDoc, { adminUser: 'mdcpharma', adminPass: 'mdc@123' });
+                }
+            }, (err) => {
+                console.error("Settings fetch error:", err);
+            });
+        }
+
+        // --- CRUD Operations ---
+        window.addEntry = async () => {
+            if (!user) return;
+            try {
+                const entriesCol = collection(db, 'artifacts', appId, 'public', 'data', 'entries');
+                await addDoc(entriesCol, {
+                    date: new Date().toISOString().split('T')[0],
+                    sales: 0,
+                    expenses: 0,
+                    refunds: 0,
+                    dues: 0,
+                    bankDeposit: 0,
+                    timestamp: Date.now()
+                });
+            } catch (err) {
+                showToast("Failed to add entry", "error");
+            }
+        };
+
+        window.updateEntry = async (id, field, value) => {
+            if (!user) return;
+            try {
+                const entryDoc = doc(db, 'artifacts', appId, 'public', 'data', 'entries', id);
+                const val = field === 'date' ? value : (parseFloat(value) || 0);
+                await updateDoc(entryDoc, { [field]: val });
+            } catch (err) {
+                console.error("Update error:", err);
+            }
+        };
+
+        // --- Custom Delete Handlers (Avoids alert/confirm) ---
+        window.confirmDelete = (id) => {
+            if (!isAdminAuthenticated) {
+                showToast("Admin power required to delete", "error");
+                return;
+            }
+            deleteTargetId = id;
+            document.getElementById('delete-modal').classList.remove('hidden');
+        };
+
+        window.closeDeleteModal = () => {
+            deleteTargetId = null;
+            document.getElementById('delete-modal').classList.add('hidden');
+        };
+
+        window.executeDelete = async () => {
+            if (!user || !deleteTargetId || !isAdminAuthenticated) return;
+            try {
+                const entryDoc = doc(db, 'artifacts', appId, 'public', 'data', 'entries', deleteTargetId);
+                await deleteDoc(entryDoc);
+                showToast("Entry deleted successfully", "success");
+            } catch (err) {
+                console.error("Delete error:", err);
+                showToast("Failed to delete entry", "error");
+            } finally {
+                closeDeleteModal();
+            }
+        };
+
+        // --- UI Rendering Logic ---
+        function switchView(view) {
+            currentView = view;
+            renderActiveView();
+        }
+
+        function renderActiveView() {
+            const mainContent = document.getElementById('main-content');
+            const nav = document.getElementById('main-nav');
+            const authScreen = document.getElementById('auth-screen');
+
+            if (!isLoggedIn) {
+                authScreen.classList.remove('hidden');
+                nav.classList.add('hidden');
+                mainContent.innerHTML = '';
+                return;
+            }
+
+            authScreen.classList.add('hidden');
+            nav.classList.remove('hidden');
+
+            const processed = entries.map(e => ({
+                ...e,
+                cashInHand: (Number(e.sales) || 0) - (Number(e.expenses) || 0) - (Number(e.refunds) || 0) - (Number(e.dues) || 0) - (Number(e.bankDeposit) || 0),
+                pl: (Number(e.sales) || 0) - (Number(e.expenses) || 0)
+            }));
+
+            const totals = processed.reduce((acc, curr) => ({
+                sales: acc.sales + (Number(curr.sales) || 0),
+                expenses: acc.expenses + (Number(curr.expenses) || 0),
+                cash: acc.cash + (Number(curr.cashInHand) || 0),
+                pl: acc.pl + (Number(curr.pl) || 0)
+            }), { sales: 0, expenses: 0, cash: 0, pl: 0 });
+
+            if (currentView === 'dashboard') {
+                renderDashboard(processed, totals);
+            } else if (currentView === 'reports') {
+                renderReports(processed);
+            } else if (currentView === 'admin') {
+                renderAdmin();
+            }
+
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                if (btn.dataset.view === currentView) {
+                    btn.classList.add('bg-white', 'text-teal-800', 'shadow-lg');
+                    btn.classList.remove('text-teal-100');
+                } else {
+                    btn.classList.remove('bg-white', 'text-teal-800', 'shadow-lg');
+                    btn.classList.add('text-teal-100');
+                }
+            });
+            
+            const badge = document.getElementById('admin-badge');
+            if (isAdminAuthenticated && currentView !== 'admin') {
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+        }
+
+        const formatINR = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val || 0);
+
+        function renderDashboard(processed, totals) {
+            document.getElementById('main-content').innerHTML = `
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-emerald-500">
+                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Sales</p>
+                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.sales)}</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-rose-500">
+                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expense</p>
+                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.expenses)}</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-amber-500">
+                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Cash In Hand</p>
+                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.cash)}</h3>
+                    </div>
+                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-blue-500">
+                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total P/L</p>
+                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.pl)}</h3>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
+                    <div class="p-4 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h2 class="text-lg font-bold">Daily Entries Ledger</h2>
+                            <p class="text-xs text-slate-500 uppercase tracking-widest font-semibold mt-1">${isAdminAuthenticated ? "Admin Editing Mode Active" : "View-Only Mode"}</p>
+                        </div>
+                        <div class="flex gap-2 w-full sm:w-auto">
+                            <button onclick="addEntry()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg transition-all">
+                                New Entry
+                            </button>
+                            <button onclick="exportCSV()" class="p-2 bg-slate-100 text-slate-600 rounded-lg">Download</button>
+                            <button onclick="window.print()" class="p-2 bg-slate-100 text-slate-600 rounded-lg">Print</button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse min-w-[1000px]">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-widest border-b border-slate-200">
+                                    <th class="p-4">Date</th>
+                                    <th class="p-4 text-right">Sales (₹)</th>
+                                    <th class="p-4 text-right">Expense (₹)</th>
+                                    <th class="p-4 text-right">Refund (₹)</th>
+                                    <th class="p-4 text-right">Dues (₹)</th>
+                                    <th class="p-4 text-right">Bank Deposit (₹)</th>
+                                    <th class="p-4 text-right bg-teal-50 text-teal-800">Cash Hand</th>
+                                    <th class="p-4 text-right bg-blue-50 text-blue-800">Day P/L</th>
+                                    <th class="p-4 text-center">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                ${processed.map(row => `
+                                    <tr class="hover:bg-slate-50/80 transition-all">
+                                        <td class="p-2"><input type="date" value="${row.date}" onchange="updateEntry('${row.id}', 'date', this.value)" class="w-full bg-white px-3 py-2 rounded border border-transparent hover:border-slate-300 focus:border-teal-500 outline-none text-sm font-medium"></td>
+                                        <td class="p-2"><input type="number" value="${row.sales || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'sales', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
+                                        <td class="p-2"><input type="number" value="${row.expenses || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'expenses', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 text-rose-600 outline-none font-semibold"></td>
+                                        <td class="p-2"><input type="number" value="${row.refunds || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'refunds', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
+                                        <td class="p-2"><input type="number" value="${row.dues || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'dues', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
+                                        <td class="p-2"><input type="number" value="${row.bankDeposit || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'bankDeposit', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
+                                        <td class="p-4 text-right font-bold text-teal-700 bg-teal-50/30">${formatINR(row.cashInHand)}</td>
+                                        <td class="p-4 text-right font-bold bg-blue-50/30 ${row.pl >= 0 ? 'text-blue-700' : 'text-rose-600'}">${formatINR(row.pl)}</td>
+                                        <td class="p-4 text-center">
+                                            <button onclick="confirmDelete('${row.id}')" class="${isAdminAuthenticated ? 'text-rose-400 hover:text-rose-600' : 'text-slate-200 cursor-not-allowed'} font-bold">
+                                                Delete
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderReports(processed) {
+            const monthly = {};
+            const yearly = {};
+            processed.forEach(e => {
+                const d = new Date(e.date);
+                if (isNaN(d.getTime())) return;
+                const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                const yKey = `${d.getFullYear()}`;
+                [monthly, yearly].forEach((target, i) => {
+                    const key = i === 0 ? mKey : yKey;
+                    if (!target[key]) target[key] = { sales: 0, expenses: 0, bank: 0 };
+                    target[key].sales += (Number(e.sales) || 0);
+                    target[key].expenses += (Number(e.expenses) || 0);
+                    target[key].bank += (Number(e.bankDeposit) || 0);
+                });
+            });
+
+            const mData = Object.entries(monthly).sort((a,b) => b[0].localeCompare(a[0]));
+            const yData = Object.entries(yearly).sort((a,b) => b[0].localeCompare(a[0]));
+
+            document.getElementById('main-content').innerHTML = `
+                <div class="space-y-8">
+                    <h2 class="text-2xl font-bold">Financial Summary</h2>
+                    ${generateReportTable("Monthly Summary", mData, true)}
+                    ${generateReportTable("Yearly Summary", yData, false)}
+                </div>
+            `;
+        }
+
+        function generateReportTable(title, data, isMonth) {
+            return `
+                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+                    <div class="p-4 bg-slate-50 font-bold border-b">${title}</div>
+                    <table class="w-full text-left text-sm">
+                        <thead class="bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                            <tr><th class="p-4">${isMonth ? 'Month' : 'Year'}</th><th class="p-4 text-right">Sales</th><th class="p-4 text-right">Expenses</th><th class="p-4 text-right">Net Profit</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            ${data.map(([key, v]) => `
+                                <tr>
+                                    <td class="p-4 font-bold">${isMonth ? new Date(key + '-02').toLocaleString('default', {month:'long', year:'numeric'}) : key}</td>
+                                    <td class="p-4 text-right text-emerald-600">${formatINR(v.sales)}</td>
+                                    <td class="p-4 text-right text-rose-600">${formatINR(v.expenses)}</td>
+                                    <td class="p-4 text-right text-blue-700 font-bold">${formatINR(v.sales - v.expenses)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function renderAdmin() {
+            if (!isAdminAuthenticated) {
+                document.getElementById('main-content').innerHTML = `
+                    <div class="max-w-md mx-auto mt-12 bg-white p-8 rounded-2xl shadow-xl">
+                        <h2 class="text-xl font-bold mb-4">Admin Verification</h2>
+                        <p class="text-slate-500 text-sm mb-6 uppercase tracking-widest font-bold">Restricted Area - Super Admin Only</p>
+                        <form onsubmit="handleAdminLogin(event)" class="space-y-4">
+                            <input type="text" id="admin-user" placeholder="Admin User" class="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-rose-400">
+                            <input type="password" id="admin-pass" placeholder="Admin Password" class="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-rose-400">
+                            <button class="w-full bg-slate-900 text-white font-bold py-3 rounded-xl hover:bg-black transition-all">Unlock Admin Power</button>
+                        </form>
+                    </div>
+                `;
+            } else {
+                document.getElementById('main-content').innerHTML = `
+                    <div class="max-w-xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-slate-100 mt-10">
+                        <div class="flex justify-between items-center border-b pb-4 mb-6">
+                            <h2 class="text-xl font-bold text-emerald-900">Admin Control Panel</h2>
+                            <button onclick="exitAdminMode()" class="text-rose-500 text-xs font-bold underline">Exit Admin Mode</button>
+                        </div>
+                        <form onsubmit="updateSettings(event)" class="space-y-6">
+                            <div><label class="block text-sm font-bold mb-2">Pharmacy App Username</label><input type="text" id="set-user" value="${appSettings.adminUser}" class="w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"></div>
+                            <div><label class="block text-sm font-bold mb-2">Pharmacy App Password</label><input type="text" id="set-pass" value="${appSettings.adminPass}" class="w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"></div>
+                            <button class="w-full bg-emerald-700 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-emerald-800 transition-all">Update System Credentials</button>
+                        </form>
+                    </div>
+                `;
+            }
+        }
+
+        // --- Handlers ---
+        window.handleAppLogin = (e) => {
+            e.preventDefault();
+            const u = document.getElementById('login-user').value;
+            const p = document.getElementById('login-pass').value;
+            if (u === appSettings.adminUser && p === appSettings.adminPass) {
+                isLoggedIn = true;
+                showToast("Logged in successfully", "success");
+                renderActiveView();
+            } else {
+                showToast("Invalid app credentials", "error");
+            }
+        };
+
+        window.handleAdminLogin = (e) => {
+            e.preventDefault();
+            const u = document.getElementById('admin-user').value;
+            const p = document.getElementById('admin-pass').value;
+            if (u === SUPER_ADMIN.user && p === SUPER_ADMIN.pass) {
+                isAdminAuthenticated = true;
+                showToast("Admin power unlocked", "success");
+                renderActiveView();
+            } else {
+                showToast("Incorrect super-admin credentials", "error");
+            }
+        };
+
+        window.updateSettings = async (e) => {
+            e.preventDefault();
+            if (!user) return;
+            const u = document.getElementById('set-user').value;
+            const p = document.getElementById('set-pass').value;
+            try {
+                const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
+                await setDoc(settingsDoc, { adminUser: u, adminPass: p });
+                showToast("System credentials updated!", "success");
+                renderActiveView();
+            } catch (err) {
+                showToast("Failed to update settings", "error");
+            }
+        };
+
+        window.logout = () => {
+            isLoggedIn = false;
+            isAdminAuthenticated = false;
+            switchView('dashboard');
+        };
+
+        window.exitAdminMode = () => {
+            isAdminAuthenticated = false;
+            switchView('dashboard');
+        };
+
+        function showToast(message, type = "success") {
+            const toast = document.getElementById('toast');
+            toast.innerText = message;
+            toast.className = `fixed top-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold transition-all transform ${type === 'success' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'}`;
+            toast.classList.remove('hidden', 'opacity-0');
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => toast.classList.add('hidden'), 500);
+            }, 3000);
+        }
+
+        window.exportCSV = () => {
+            const headers = ["Date", "Sales", "Expenses", "Refunds", "Dues", "Bank Deposit"];
+            const csvRows = entries.map(e => [e.date, e.sales, e.expenses, e.refunds, e.dues, e.bankDeposit].join(","));
+            const csvContent = [headers.join(","), ...csvRows].join("\n");
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('href', url);
+            a.setAttribute('download', 'pharmacy_ledger.csv');
+            a.click();
+        };
+
+        window.switchView = switchView;
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initAuth();
+            renderActiveView();
+        });
+    </script>
+    <style>
+        @media print {
+            nav, .fixed, button, input[type="date"], td:last-child, th:last-child { display: none !important; }
+            body { background: white; padding: 0; }
+            .bg-teal-50, .bg-blue-50 { background-color: transparent !important; }
+            input { border: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-900">
+
+    <!-- Toast Container -->
+    <div id="toast" class="hidden opacity-0"></div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div class="p-6 text-center">
+                <div class="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <span class="text-rose-600 text-3xl">!</span>
+                </div>
+                <h3 class="text-lg font-bold text-slate-900">Confirm Deletion</h3>
+                <p class="text-slate-500 text-sm mt-2">Are you sure you want to remove this entry? This action cannot be undone.</p>
+            </div>
+            <div class="flex border-t">
+                <button onclick="closeDeleteModal()" class="flex-1 p-4 font-bold text-slate-500 hover:bg-slate-50 transition-colors border-r">Cancel</button>
+                <button onclick="executeDelete()" class="flex-1 p-4 font-bold text-rose-600 hover:bg-rose-50 transition-colors">Delete Now</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auth Screen -->
+    <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-teal-900 p-4">
+        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div class="bg-teal-700 p-8 text-center text-white">
+                <h2 class="text-2xl font-bold">Medical Pharmacy</h2>
+                <p class="text-teal-100 mt-2">Sign in to manage your financials</p>
+            </div>
+            <form onsubmit="handleAppLogin(event)" class="p-8 space-y-6">
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">Username</label>
+                    <input type="text" id="login-user" required class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-slate-700 mb-1">Password</label>
+                    <input type="password" id="login-pass" required class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none">
+                </div>
+                <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-xl shadow-lg transition-all active:scale-95">Log In</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <nav id="main-nav" class="bg-teal-800 text-white shadow-xl sticky top-0 z-50 hidden">
+        <div class="max-w-7xl mx-auto px-4 flex justify-between items-center h-16">
+            <div class="flex items-center gap-2 cursor-pointer" onclick="switchView('dashboard')">
+                <h1 class="text-xl font-bold">Medical Pharmacy</h1>
+            </div>
+            <div class="hidden md:flex items-center gap-4">
+                <button data-view="dashboard" onclick="switchView('dashboard')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Ledger</button>
+                <button data-view="reports" onclick="switchView('reports')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Reports</button>
+                <button data-view="admin" onclick="switchView('admin')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Admin Panel</button>
+                <button onclick="logout()" class="text-teal-100 hover:text-white text-sm font-semibold ml-4">Logout</button>
+            </div>
+            <div class="md:hidden flex gap-3">
+                <button onclick="switchView('dashboard')" class="text-teal-100"><span class="text-lg">📊</span></button>
+                <button onclick="switchView('admin')" class="text-teal-100"><span class="text-lg">⚙️</span></button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Content Area -->
+    <main id="main-content" class="max-w-7xl mx-auto p-4 sm:p-6 mt-4">
+        <!-- JS Renders Content Here -->
+    </main>
+
+    <!-- Admin Power Badge -->
+    <div id="admin-badge" class="fixed bottom-6 right-6 bg-emerald-600 text-white px-4 py-2 rounded-full shadow-2xl hidden animate-bounce z-40">
+        <span class="text-sm font-bold">Admin Power Active</span>
+    </div>
+
+</body>
+</html>

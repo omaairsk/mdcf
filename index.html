@@ -93,7 +93,7 @@
     <div id="canvas-container"></div>
     <div id="root"></div>
 
-    <!-- Firebase SDKs -->
+    <!-- Firebase SDKs (Module script runs asynchronously) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
@@ -106,6 +106,7 @@
             const db = getFirestore(app);
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
+            // Store in global window object for React access
             window.firebaseApp = { 
                 auth, db, appId, collection, doc, addDoc, deleteDoc, onSnapshot, query, 
                 writeBatch, getDocs, signInWithCustomToken, signInAnonymously, onAuthStateChanged 
@@ -114,7 +115,7 @@
             // Dispatch event to notify React that Firebase is ready
             window.dispatchEvent(new Event('firebase-ready'));
         } catch (e) {
-            console.error("Firebase init failed:", e);
+            console.error("Firebase initialization failed:", e);
         }
     </script>
 
@@ -210,7 +211,7 @@
 
         // --- Main App Component ---
         const App = () => {
-            const [fbReady, setFbReady] = useState(!!window.firebaseApp);
+            const [fbReady, setFbReady] = useState(false);
             const [user, setUser] = useState(null);
             const [role, setRole] = useState('staff'); 
             const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -218,7 +219,7 @@
             const [records, setRecords] = useState([]);
             const [loadingData, setLoadingData] = useState(true);
 
-            // Access keys as requested
+            // Access keys
             const [staffPass, setStaffPass] = useState('mdc@123');
             const [adminPass, setAdminPass] = useState('Fadmin');
 
@@ -227,11 +228,15 @@
                 sales: '', expense: '', refund: '', dues: '', bankDeposit: ''
             });
 
-            // (1) Listen for Firebase Initialization
+            // (1) Listen for Firebase Initialization & Handle Race Condition
             useEffect(() => {
-                const handleReady = () => setFbReady(true);
-                window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
+                if (window.firebaseApp) {
+                    setFbReady(true);
+                } else {
+                    const handleReady = () => setFbReady(true);
+                    window.addEventListener('firebase-ready', handleReady);
+                    return () => window.removeEventListener('firebase-ready', handleReady);
+                }
             }, []);
 
             // (2) Auth Initialization
@@ -316,7 +321,7 @@
                     await addDoc(recordsCollection, newRecord);
                     setFormData({ date: new Date().toISOString().split('T')[0], sales: '', expense: '', refund: '', dues: '', bankDeposit: '' });
                 } catch (e) {
-                    console.error("Error adding document: ", e);
+                    console.error("Error adding record:", e);
                 }
             };
 
@@ -328,7 +333,7 @@
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'pharmacy_records', id);
                     await deleteDoc(docRef);
                 } catch (e) {
-                    console.error("Error deleting document: ", e);
+                    console.error("Error deleting record:", e);
                 }
             };
 
@@ -346,7 +351,7 @@
                     });
                     await batch.commit();
                 } catch (e) {
-                    console.error("Error clearing data: ", e);
+                    console.error("Error clearing database:", e);
                 }
             };
 
@@ -362,11 +367,13 @@
                 }
             };
 
+            // Loader for system initialization
             if (!fbReady) {
                 return (
                     <div className="flex flex-col items-center justify-center min-h-screen bg-slate-950">
                         <div className="spinner mb-6"></div>
                         <h1 className="text-sky-400 font-bold tracking-widest uppercase text-sm animate-pulse">Initializing System...</h1>
+                        <p className="text-slate-600 text-xs mt-4">Connecting to Secure Cloud Terminal</p>
                     </div>
                 );
             }
@@ -567,7 +574,7 @@
                                                 </tr>
                                             ))}
                                             {records.length === 0 && (
-                                                <tr><td colSpan="7" className="p-10 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">No logs found in cloud storage</td></tr>
+                                                <tr><td colSpan="7" className="p-10 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">No records found</td></tr>
                                             )}
                                         </tbody>
                                     </table>
@@ -576,19 +583,21 @@
                         ) : activeTab === 'admin' && role === 'admin' ? (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-10 animate-in zoom-in duration-500">
                                 <div className="glass-card p-10 space-y-8 border-t-4 border-indigo-600 shadow-xl">
-                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="shield" className="text-indigo-400"></i> Keys</h3>
+                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="shield" className="text-indigo-400"></i> Local Security</h3>
                                     <div className="space-y-4">
-                                        <p className="text-xs text-slate-500">Local terminal security keys.</p>
-                                        <input type="text" value={staffPass} onChange={e => setStaffPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-indigo-400 focus:outline-none" placeholder="Staff Pass" />
-                                        <input type="text" value={adminPass} onChange={e => setAdminPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-rose-400 focus:outline-none" placeholder="Admin Pass" />
-                                        <button onClick={() => alert('Updated!')} className="w-full bg-indigo-600 py-4 rounded-xl font-black uppercase tracking-widest">Update Local Terminal Keys</button>
+                                        <p className="text-xs text-slate-500">Manage terminal access keys.</p>
+                                        <div className="space-y-4">
+                                            <input type="text" value={staffPass} onChange={e => setStaffPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-indigo-400 focus:outline-none" placeholder="Staff Pass" />
+                                            <input type="text" value={adminPass} onChange={e => setAdminPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-rose-400 focus:outline-none" placeholder="Admin Pass" />
+                                        </div>
+                                        <button onClick={() => alert('Security keys updated for this session.')} className="w-full bg-indigo-600 py-4 rounded-xl font-black uppercase tracking-widest">Update Keys</button>
                                     </div>
                                 </div>
                                 <div className="glass-card p-10 space-y-8 border-t-4 border-rose-600 shadow-xl">
                                     <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="database-zap" className="text-rose-400"></i> Cloud Maintenance</h3>
                                     <div className="space-y-4">
-                                        <p className="text-xs text-rose-500 font-bold">DANGER ZONE: Operations below affect all devices.</p>
-                                        <button onClick={clearAllData} className="w-full border-2 border-rose-500/30 text-rose-500 hover:bg-rose-500/10 py-4 rounded-xl font-black uppercase tracking-widest transition-all">Purge Cloud Database</button>
+                                        <p className="text-xs text-rose-500 font-bold italic">Warning: Destructive actions ahead.</p>
+                                        <button onClick={clearAllData} className="w-full border-2 border-rose-500/30 text-rose-500 hover:bg-rose-500/10 py-4 rounded-xl font-black uppercase tracking-widest transition-all">Wipe All Cloud Data</button>
                                     </div>
                                 </div>
                             </div>

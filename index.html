@@ -3,529 +3,460 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Medical Pharmacy Pro</title>
+    <title>Medical Pharmacy | Financial Suite</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDKs -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, deleteDoc, addDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Global Variables provided by environment
-        const firebaseConfig = JSON.parse(__firebase_config || '{}');
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'medical-pharmacy-app';
-
-        // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-
-        // State Management
-        let user = null;
-        let entries = [];
-        let appSettings = { adminUser: 'mdcpharma', adminPass: 'mdc@123' };
-        let isLoggedIn = false;
-        let isAdminAuthenticated = false;
-        let currentView = 'dashboard';
-        let deleteTargetId = null; // For custom delete modal
-
-        const SUPER_ADMIN = {
-            user: 'fadmin',
-            pass: 'mdc@fardin0415'
-        };
-
-        // --- Auth Logic (Rule 3) ---
-        async function initAuth() {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Authentication failed:", error);
-            }
-
-            onAuthStateChanged(auth, (u) => {
-                user = u;
-                if (user) {
-                    setupDataListeners();
-                }
-            });
-        }
-
-        // --- Data Listeners (Rule 1 & Rule 3) ---
-        let entriesUnsubscribe = null;
-        let settingsUnsubscribe = null;
-
-        function setupDataListeners() {
-            if (!user) return;
-
-            if (entriesUnsubscribe) entriesUnsubscribe();
-            if (settingsUnsubscribe) settingsUnsubscribe();
-
-            const entriesCol = collection(db, 'artifacts', appId, 'public', 'data', 'entries');
-            entriesUnsubscribe = onSnapshot(entriesCol, (snapshot) => {
-                entries = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                entries.sort((a, b) => new Date(b.date) - new Date(a.date));
-                renderActiveView();
-            }, (err) => {
-                console.error("Entries fetch error:", err);
-            });
-
-            const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-            settingsUnsubscribe = onSnapshot(settingsDoc, (snapshot) => {
-                if (snapshot.exists()) {
-                    appSettings = snapshot.data();
-                } else {
-                    setDoc(settingsDoc, { adminUser: 'mdcpharma', adminPass: 'mdc@123' });
-                }
-            }, (err) => {
-                console.error("Settings fetch error:", err);
-            });
-        }
-
-        // --- CRUD Operations ---
-        window.addEntry = async () => {
-            if (!user) return;
-            try {
-                const entriesCol = collection(db, 'artifacts', appId, 'public', 'data', 'entries');
-                await addDoc(entriesCol, {
-                    date: new Date().toISOString().split('T')[0],
-                    sales: 0,
-                    expenses: 0,
-                    refunds: 0,
-                    dues: 0,
-                    bankDeposit: 0,
-                    timestamp: Date.now()
-                });
-            } catch (err) {
-                showToast("Failed to add entry", "error");
-            }
-        };
-
-        window.updateEntry = async (id, field, value) => {
-            if (!user) return;
-            try {
-                const entryDoc = doc(db, 'artifacts', appId, 'public', 'data', 'entries', id);
-                const val = field === 'date' ? value : (parseFloat(value) || 0);
-                await updateDoc(entryDoc, { [field]: val });
-            } catch (err) {
-                console.error("Update error:", err);
-            }
-        };
-
-        // --- Custom Delete Handlers (Avoids alert/confirm) ---
-        window.confirmDelete = (id) => {
-            if (!isAdminAuthenticated) {
-                showToast("Admin power required to delete", "error");
-                return;
-            }
-            deleteTargetId = id;
-            document.getElementById('delete-modal').classList.remove('hidden');
-        };
-
-        window.closeDeleteModal = () => {
-            deleteTargetId = null;
-            document.getElementById('delete-modal').classList.add('hidden');
-        };
-
-        window.executeDelete = async () => {
-            if (!user || !deleteTargetId || !isAdminAuthenticated) return;
-            try {
-                const entryDoc = doc(db, 'artifacts', appId, 'public', 'data', 'entries', deleteTargetId);
-                await deleteDoc(entryDoc);
-                showToast("Entry deleted successfully", "success");
-            } catch (err) {
-                console.error("Delete error:", err);
-                showToast("Failed to delete entry", "error");
-            } finally {
-                closeDeleteModal();
-            }
-        };
-
-        // --- UI Rendering Logic ---
-        function switchView(view) {
-            currentView = view;
-            renderActiveView();
-        }
-
-        function renderActiveView() {
-            const mainContent = document.getElementById('main-content');
-            const nav = document.getElementById('main-nav');
-            const authScreen = document.getElementById('auth-screen');
-
-            if (!isLoggedIn) {
-                authScreen.classList.remove('hidden');
-                nav.classList.add('hidden');
-                mainContent.innerHTML = '';
-                return;
-            }
-
-            authScreen.classList.add('hidden');
-            nav.classList.remove('hidden');
-
-            const processed = entries.map(e => ({
-                ...e,
-                cashInHand: (Number(e.sales) || 0) - (Number(e.expenses) || 0) - (Number(e.refunds) || 0) - (Number(e.dues) || 0) - (Number(e.bankDeposit) || 0),
-                pl: (Number(e.sales) || 0) - (Number(e.expenses) || 0)
-            }));
-
-            const totals = processed.reduce((acc, curr) => ({
-                sales: acc.sales + (Number(curr.sales) || 0),
-                expenses: acc.expenses + (Number(curr.expenses) || 0),
-                cash: acc.cash + (Number(curr.cashInHand) || 0),
-                pl: acc.pl + (Number(curr.pl) || 0)
-            }), { sales: 0, expenses: 0, cash: 0, pl: 0 });
-
-            if (currentView === 'dashboard') {
-                renderDashboard(processed, totals);
-            } else if (currentView === 'reports') {
-                renderReports(processed);
-            } else if (currentView === 'admin') {
-                renderAdmin();
-            }
-
-            document.querySelectorAll('.nav-btn').forEach(btn => {
-                if (btn.dataset.view === currentView) {
-                    btn.classList.add('bg-white', 'text-teal-800', 'shadow-lg');
-                    btn.classList.remove('text-teal-100');
-                } else {
-                    btn.classList.remove('bg-white', 'text-teal-800', 'shadow-lg');
-                    btn.classList.add('text-teal-100');
-                }
-            });
-            
-            const badge = document.getElementById('admin-badge');
-            if (isAdminAuthenticated && currentView !== 'admin') {
-                badge.classList.remove('hidden');
-            } else {
-                badge.classList.add('hidden');
-            }
-        }
-
-        const formatINR = (val) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(val || 0);
-
-        function renderDashboard(processed, totals) {
-            document.getElementById('main-content').innerHTML = `
-                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-emerald-500">
-                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Sales</p>
-                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.sales)}</h3>
-                    </div>
-                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-rose-500">
-                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total Expense</p>
-                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.expenses)}</h3>
-                    </div>
-                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-amber-500">
-                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Cash In Hand</p>
-                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.cash)}</h3>
-                    </div>
-                    <div class="bg-white p-5 rounded-2xl shadow-lg border-l-4 border-blue-500">
-                        <p class="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1">Total P/L</p>
-                        <h3 class="text-xl sm:text-2xl font-black text-slate-800">${formatINR(totals.pl)}</h3>
-                    </div>
-                </div>
-
-                <div class="bg-white rounded-2xl shadow-xl overflow-hidden border border-slate-200">
-                    <div class="p-4 sm:p-6 border-b border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                        <div>
-                            <h2 class="text-lg font-bold">Daily Entries Ledger</h2>
-                            <p class="text-xs text-slate-500 uppercase tracking-widest font-semibold mt-1">${isAdminAuthenticated ? "Admin Editing Mode Active" : "View-Only Mode"}</p>
-                        </div>
-                        <div class="flex gap-2 w-full sm:w-auto">
-                            <button onclick="addEntry()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2 shadow-lg transition-all">
-                                New Entry
-                            </button>
-                            <button onclick="exportCSV()" class="p-2 bg-slate-100 text-slate-600 rounded-lg">Download</button>
-                            <button onclick="window.print()" class="p-2 bg-slate-100 text-slate-600 rounded-lg">Print</button>
-                        </div>
-                    </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left border-collapse min-w-[1000px]">
-                            <thead>
-                                <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-widest border-b border-slate-200">
-                                    <th class="p-4">Date</th>
-                                    <th class="p-4 text-right">Sales (₹)</th>
-                                    <th class="p-4 text-right">Expense (₹)</th>
-                                    <th class="p-4 text-right">Refund (₹)</th>
-                                    <th class="p-4 text-right">Dues (₹)</th>
-                                    <th class="p-4 text-right">Bank Deposit (₹)</th>
-                                    <th class="p-4 text-right bg-teal-50 text-teal-800">Cash Hand</th>
-                                    <th class="p-4 text-right bg-blue-50 text-blue-800">Day P/L</th>
-                                    <th class="p-4 text-center">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-100">
-                                ${processed.map(row => `
-                                    <tr class="hover:bg-slate-50/80 transition-all">
-                                        <td class="p-2"><input type="date" value="${row.date}" onchange="updateEntry('${row.id}', 'date', this.value)" class="w-full bg-white px-3 py-2 rounded border border-transparent hover:border-slate-300 focus:border-teal-500 outline-none text-sm font-medium"></td>
-                                        <td class="p-2"><input type="number" value="${row.sales || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'sales', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
-                                        <td class="p-2"><input type="number" value="${row.expenses || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'expenses', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 text-rose-600 outline-none font-semibold"></td>
-                                        <td class="p-2"><input type="number" value="${row.refunds || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'refunds', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
-                                        <td class="p-2"><input type="number" value="${row.dues || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'dues', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
-                                        <td class="p-2"><input type="number" value="${row.bankDeposit || ''}" placeholder="0" onchange="updateEntry('${row.id}', 'bankDeposit', this.value)" class="w-full text-right p-2 rounded border border-transparent hover:border-slate-300 outline-none font-semibold"></td>
-                                        <td class="p-4 text-right font-bold text-teal-700 bg-teal-50/30">${formatINR(row.cashInHand)}</td>
-                                        <td class="p-4 text-right font-bold bg-blue-50/30 ${row.pl >= 0 ? 'text-blue-700' : 'text-rose-600'}">${formatINR(row.pl)}</td>
-                                        <td class="p-4 text-center">
-                                            <button onclick="confirmDelete('${row.id}')" class="${isAdminAuthenticated ? 'text-rose-400 hover:text-rose-600' : 'text-slate-200 cursor-not-allowed'} font-bold">
-                                                Delete
-                                            </button>
-                                        </td>
-                                    </tr>
-                                `).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderReports(processed) {
-            const monthly = {};
-            const yearly = {};
-            processed.forEach(e => {
-                const d = new Date(e.date);
-                if (isNaN(d.getTime())) return;
-                const mKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-                const yKey = `${d.getFullYear()}`;
-                [monthly, yearly].forEach((target, i) => {
-                    const key = i === 0 ? mKey : yKey;
-                    if (!target[key]) target[key] = { sales: 0, expenses: 0, bank: 0 };
-                    target[key].sales += (Number(e.sales) || 0);
-                    target[key].expenses += (Number(e.expenses) || 0);
-                    target[key].bank += (Number(e.bankDeposit) || 0);
-                });
-            });
-
-            const mData = Object.entries(monthly).sort((a,b) => b[0].localeCompare(a[0]));
-            const yData = Object.entries(yearly).sort((a,b) => b[0].localeCompare(a[0]));
-
-            document.getElementById('main-content').innerHTML = `
-                <div class="space-y-8">
-                    <h2 class="text-2xl font-bold">Financial Summary</h2>
-                    ${generateReportTable("Monthly Summary", mData, true)}
-                    ${generateReportTable("Yearly Summary", yData, false)}
-                </div>
-            `;
-        }
-
-        function generateReportTable(title, data, isMonth) {
-            return `
-                <div class="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
-                    <div class="p-4 bg-slate-50 font-bold border-b">${title}</div>
-                    <table class="w-full text-left text-sm">
-                        <thead class="bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                            <tr><th class="p-4">${isMonth ? 'Month' : 'Year'}</th><th class="p-4 text-right">Sales</th><th class="p-4 text-right">Expenses</th><th class="p-4 text-right">Net Profit</th></tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-100">
-                            ${data.map(([key, v]) => `
-                                <tr>
-                                    <td class="p-4 font-bold">${isMonth ? new Date(key + '-02').toLocaleString('default', {month:'long', year:'numeric'}) : key}</td>
-                                    <td class="p-4 text-right text-emerald-600">${formatINR(v.sales)}</td>
-                                    <td class="p-4 text-right text-rose-600">${formatINR(v.expenses)}</td>
-                                    <td class="p-4 text-right text-blue-700 font-bold">${formatINR(v.sales - v.expenses)}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            `;
-        }
-
-        function renderAdmin() {
-            if (!isAdminAuthenticated) {
-                document.getElementById('main-content').innerHTML = `
-                    <div class="max-w-md mx-auto mt-12 bg-white p-8 rounded-2xl shadow-xl">
-                        <h2 class="text-xl font-bold mb-4">Admin Verification</h2>
-                        <p class="text-slate-500 text-sm mb-6 uppercase tracking-widest font-bold">Restricted Area - Super Admin Only</p>
-                        <form onsubmit="handleAdminLogin(event)" class="space-y-4">
-                            <input type="text" id="admin-user" placeholder="Admin User" class="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-rose-400">
-                            <input type="password" id="admin-pass" placeholder="Admin Password" class="w-full p-3 border rounded-xl outline-none focus:ring-2 focus:ring-rose-400">
-                            <button class="w-full bg-slate-900 text-white font-bold py-3 rounded-xl hover:bg-black transition-all">Unlock Admin Power</button>
-                        </form>
-                    </div>
-                `;
-            } else {
-                document.getElementById('main-content').innerHTML = `
-                    <div class="max-w-xl mx-auto bg-white p-8 rounded-2xl shadow-xl border border-slate-100 mt-10">
-                        <div class="flex justify-between items-center border-b pb-4 mb-6">
-                            <h2 class="text-xl font-bold text-emerald-900">Admin Control Panel</h2>
-                            <button onclick="exitAdminMode()" class="text-rose-500 text-xs font-bold underline">Exit Admin Mode</button>
-                        </div>
-                        <form onsubmit="updateSettings(event)" class="space-y-6">
-                            <div><label class="block text-sm font-bold mb-2">Pharmacy App Username</label><input type="text" id="set-user" value="${appSettings.adminUser}" class="w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"></div>
-                            <div><label class="block text-sm font-bold mb-2">Pharmacy App Password</label><input type="text" id="set-pass" value="${appSettings.adminPass}" class="w-full p-3 border rounded-xl focus:ring-2 focus:ring-emerald-500 outline-none"></div>
-                            <button class="w-full bg-emerald-700 text-white font-bold py-3 rounded-xl shadow-lg hover:bg-emerald-800 transition-all">Update System Credentials</button>
-                        </form>
-                    </div>
-                `;
-            }
-        }
-
-        // --- Handlers ---
-        window.handleAppLogin = (e) => {
-            e.preventDefault();
-            const u = document.getElementById('login-user').value;
-            const p = document.getElementById('login-pass').value;
-            if (u === appSettings.adminUser && p === appSettings.adminPass) {
-                isLoggedIn = true;
-                showToast("Logged in successfully", "success");
-                renderActiveView();
-            } else {
-                showToast("Invalid app credentials", "error");
-            }
-        };
-
-        window.handleAdminLogin = (e) => {
-            e.preventDefault();
-            const u = document.getElementById('admin-user').value;
-            const p = document.getElementById('admin-pass').value;
-            if (u === SUPER_ADMIN.user && p === SUPER_ADMIN.pass) {
-                isAdminAuthenticated = true;
-                showToast("Admin power unlocked", "success");
-                renderActiveView();
-            } else {
-                showToast("Incorrect super-admin credentials", "error");
-            }
-        };
-
-        window.updateSettings = async (e) => {
-            e.preventDefault();
-            if (!user) return;
-            const u = document.getElementById('set-user').value;
-            const p = document.getElementById('set-pass').value;
-            try {
-                const settingsDoc = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'config');
-                await setDoc(settingsDoc, { adminUser: u, adminPass: p });
-                showToast("System credentials updated!", "success");
-                renderActiveView();
-            } catch (err) {
-                showToast("Failed to update settings", "error");
-            }
-        };
-
-        window.logout = () => {
-            isLoggedIn = false;
-            isAdminAuthenticated = false;
-            switchView('dashboard');
-        };
-
-        window.exitAdminMode = () => {
-            isAdminAuthenticated = false;
-            switchView('dashboard');
-        };
-
-        function showToast(message, type = "success") {
-            const toast = document.getElementById('toast');
-            toast.innerText = message;
-            toast.className = `fixed top-6 left-1/2 -translate-x-1/2 px-6 py-3 rounded-xl shadow-2xl z-[100] font-bold transition-all transform ${type === 'success' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'}`;
-            toast.classList.remove('hidden', 'opacity-0');
-            setTimeout(() => {
-                toast.classList.add('opacity-0');
-                setTimeout(() => toast.classList.add('hidden'), 500);
-            }, 3000);
-        }
-
-        window.exportCSV = () => {
-            const headers = ["Date", "Sales", "Expenses", "Refunds", "Dues", "Bank Deposit"];
-            const csvRows = entries.map(e => [e.date, e.sales, e.expenses, e.refunds, e.dues, e.bankDeposit].join(","));
-            const csvContent = [headers.join(","), ...csvRows].join("\n");
-            const blob = new Blob([csvContent], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.setAttribute('href', url);
-            a.setAttribute('download', 'pharmacy_ledger.csv');
-            a.click();
-        };
-
-        window.switchView = switchView;
-
-        window.addEventListener('DOMContentLoaded', () => {
-            initAuth();
-            renderActiveView();
-        });
-    </script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+        
+        :root {
+            --glass: rgba(15, 23, 42, 0.7);
+            --border: rgba(255, 255, 255, 0.1);
+        }
+
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            overflow-x: hidden;
+            background-color: #020617;
+            color: #f8fafc;
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            min-height: 100vh;
+        }
+
+        #canvas-container { 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            z-index: -1; 
+            pointer-events: none;
+        }
+
+        .glass-card { 
+            background: var(--glass); 
+            backdrop-filter: blur(20px); 
+            border: 1px solid var(--border); 
+            border-radius: 1.5rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-card:hover {
+            border-color: rgba(56, 189, 248, 0.3);
+            transform: translateY(-4px);
+        }
+
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        /* Centering Utilities */
+        .center-layout {
+            width: 100%;
+            max-width: 1400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
         @media print {
-            nav, .fixed, button, input[type="date"], td:last-child, th:last-child { display: none !important; }
-            body { background: white; padding: 0; }
-            .bg-teal-50, .bg-blue-50 { background-color: transparent !important; }
-            input { border: none !important; }
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; color: black; }
+            .glass-card { border: 1px solid #ddd; background: white; color: black; box-shadow: none; }
         }
     </style>
 </head>
-<body class="bg-slate-50 min-h-screen text-slate-900">
+<body>
+    <div id="canvas-container"></div>
+    <div id="root"></div>
 
-    <!-- Toast Container -->
-    <div id="toast" class="hidden opacity-0"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
 
-    <!-- Delete Confirmation Modal -->
-    <div id="delete-modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4 hidden">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
-            <div class="p-6 text-center">
-                <div class="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <span class="text-rose-600 text-3xl">!</span>
+        // --- Enhanced 3D Background ---
+        const ThreeBackground = () => {
+            const containerRef = useRef();
+
+            useEffect(() => {
+                const scene = new THREE.Scene();
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                renderer.setSize(window.innerWidth, window.innerHeight);
+                renderer.setPixelRatio(window.devicePixelRatio);
+                containerRef.current.appendChild(renderer.domElement);
+
+                // Lighting for actual 3D effect
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+                scene.add(ambientLight);
+                const pointLight = new THREE.PointLight(0x38bdf8, 2);
+                pointLight.position.set(20, 20, 20);
+                scene.add(pointLight);
+
+                // 3D Objects (Spheres/Molecules)
+                const group = new THREE.Group();
+                const geometry = new THREE.SphereGeometry(0.4, 16, 16);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x0ea5e9, 
+                    shininess: 100,
+                    transparent: true,
+                    opacity: 0.6
+                });
+
+                for (let i = 0; i < 60; i++) {
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(
+                        (Math.random() - 0.5) * 60,
+                        (Math.random() - 0.5) * 60,
+                        (Math.random() - 0.5) * 40
+                    );
+                    mesh.scale.setScalar(Math.random() * 2 + 0.5);
+                    group.add(mesh);
+                }
+                scene.add(group);
+
+                // Starfield background depth
+                const starGeo = new THREE.BufferGeometry();
+                const starPos = new Float32Array(3000);
+                for(let i=0; i<3000; i++) starPos[i] = (Math.random() - 0.5) * 200;
+                starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+                const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 });
+                const stars = new THREE.Points(starGeo, starMat);
+                scene.add(stars);
+
+                camera.position.z = 30;
+
+                let mouseX = 0, mouseY = 0;
+                const onMouseMove = (e) => {
+                    mouseX = (e.clientX - window.innerWidth / 2) * 0.02;
+                    mouseY = (e.clientY - window.innerHeight / 2) * 0.02;
+                };
+
+                const animate = () => {
+                    requestAnimationFrame(animate);
+                    group.rotation.y += 0.002;
+                    group.rotation.x += 0.001;
+                    stars.rotation.y -= 0.0005;
+
+                    camera.position.x += (mouseX - camera.position.x) * 0.05;
+                    camera.position.y += (-mouseY - camera.position.y) * 0.05;
+                    camera.lookAt(scene.position);
+
+                    renderer.render(scene, camera);
+                };
+                animate();
+
+                window.addEventListener('mousemove', onMouseMove);
+                const handleResize = () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                };
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    window.removeEventListener('mousemove', onMouseMove);
+                    window.removeEventListener('resize', handleResize);
+                    containerRef.current?.removeChild(renderer.domElement);
+                };
+            }, []);
+
+            return <div ref={containerRef} id="canvas-container" />;
+        };
+
+        // --- Main App Component ---
+        const App = () => {
+            const [role, setRole] = useState('staff'); 
+            const [isLoggedIn, setIsLoggedIn] = useState(false);
+            const [activeTab, setActiveTab] = useState('dashboard');
+            const [records, setRecords] = useState(() => {
+                const saved = localStorage.getItem('pharmacy_records_v3');
+                return saved ? JSON.parse(saved) : [];
+            });
+            // Updated access keys
+            const [staffPass, setStaffPass] = useState('mdc@123');
+            const [adminPass, setAdminPass] = useState('Fadmin');
+
+            const [formData, setFormData] = useState({
+                date: new Date().toISOString().split('T')[0],
+                sales: '', expense: '', refund: '', dues: '', bankDeposit: ''
+            });
+
+            useEffect(() => {
+                localStorage.setItem('pharmacy_records_v3', JSON.stringify(records));
+                if (window.lucide) window.lucide.createIcons();
+            }, [records, isLoggedIn, activeTab]);
+
+            const stats = useMemo(() => {
+                const totalSales = records.reduce((acc, r) => acc + (Number(r.sales) || 0), 0);
+                const totalExpense = records.reduce((acc, r) => acc + (Number(r.expense) || 0), 0);
+                const totalRefund = records.reduce((acc, r) => acc + (Number(r.refund) || 0), 0);
+                return { totalSales, totalExpense, totalRefund, netProfit: totalSales - totalExpense - totalRefund };
+            }, [records]);
+
+            const monthlySummary = useMemo(() => {
+                const groups = {};
+                records.forEach(r => {
+                    const month = r.date.substring(0, 7);
+                    if (!groups[month]) groups[month] = { month, sales: 0, expenses: 0, profit: 0 };
+                    groups[month].sales += (Number(r.sales) || 0);
+                    groups[month].expenses += (Number(r.expense) || 0);
+                    groups[month].profit += ((Number(r.sales) || 0) - (Number(r.expense) || 0) - (Number(r.refund) || 0));
+                });
+                return Object.values(groups).sort((a, b) => b.month.localeCompare(a.month));
+            }, [records]);
+
+            const addRecord = (e) => {
+                e.preventDefault();
+                const dayPL = Number(formData.sales) - Number(formData.expense) - Number(formData.refund);
+                const cashHand = Number(formData.sales) - Number(formData.bankDeposit) - Number(formData.dues) - Number(formData.refund);
+                const newRecord = { ...formData, id: Date.now(), dayPL, cashHand };
+                setRecords([newRecord, ...records]);
+                setFormData({ date: new Date().toISOString().split('T')[0], sales: '', expense: '', refund: '', dues: '', bankDeposit: '' });
+            };
+
+            const handleLogin = (selectedRole, pass) => {
+                if ((selectedRole === 'admin' && pass === adminPass) || (selectedRole === 'staff' && pass === staffPass)) {
+                    setIsLoggedIn(true);
+                } else {
+                    alert("Authentication Failed");
+                }
+            };
+
+            if (!isLoggedIn) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen p-6 w-full">
+                        <ThreeBackground />
+                        <div className="glass-card p-10 w-full max-w-md space-y-8 animate-in fade-in zoom-in duration-500">
+                            <div className="text-center">
+                                <div className="inline-block p-4 bg-sky-500/20 rounded-2xl mb-4 border border-sky-500/30">
+                                    <i data-lucide="shield-check" className="w-10 h-10 text-sky-400"></i>
+                                </div>
+                                <h1 className="text-4xl font-black tracking-tighter text-white uppercase">MEDICAL <span className="text-sky-500">PHARMACY</span></h1>
+                                <p className="text-slate-400 text-xs mt-2 font-bold tracking-widest uppercase opacity-60">Pharmacy Management Terminal</p>
+                            </div>
+                            <div className="space-y-6">
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={() => setRole('staff')} className={`flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${role === 'staff' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'border-slate-800 text-slate-500'}`}>
+                                        <i data-lucide="users" className="w-4 h-4"></i> Staff
+                                    </button>
+                                    <button onClick={() => setRole('admin')} className={`flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${role === 'admin' ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400' : 'border-slate-800 text-slate-500'}`}>
+                                        <i data-lucide="key" className="w-4 h-4"></i> Admin
+                                    </button>
+                                </div>
+                                <input 
+                                    type="password" 
+                                    id="passInput"
+                                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-white focus:outline-none focus:ring-2 focus:ring-sky-500/40 text-center tracking-widest"
+                                    placeholder="Enter Access Key"
+                                    onKeyDown={(e) => e.key === 'Enter' && handleLogin(role, e.target.value)}
+                                />
+                                <button 
+                                    onClick={() => handleLogin(role, document.getElementById('passInput').value)}
+                                    className="w-full bg-sky-600 hover:bg-sky-500 text-white font-bold py-4 rounded-xl shadow-lg transition-all flex items-center justify-center gap-3"
+                                >
+                                    Log In <i data-lucide="chevron-right" className="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen pb-20">
+                    <ThreeBackground />
+                    
+                    {/* Navigation - Centered */}
+                    <div className="center-layout pt-6 px-4 sm:px-6">
+                        <nav className="no-print glass-card p-4 flex flex-wrap items-center justify-between gap-6 shadow-2xl sticky top-6 z-50">
+                            <div className="flex items-center gap-4">
+                                <div className={`p-3 rounded-2xl ${role === 'admin' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>
+                                    <i data-lucide="activity" className="w-6 h-6 text-white"></i>
+                                </div>
+                                <div>
+                                    <h2 className="font-extrabold text-xl tracking-tighter uppercase">MEDICAL PHARMACY</h2>
+                                    <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">{role} Panel</p>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/5">
+                                {['dashboard', 'logs', 'admin'].map(tab => (
+                                    (tab !== 'admin' || role === 'admin') && (
+                                        <button 
+                                            key={tab}
+                                            onClick={() => setActiveTab(tab)} 
+                                            className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${activeTab === tab ? 'bg-white/10 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+                                        >
+                                            {tab}
+                                        </button>
+                                    )
+                                ))}
+                                <button onClick={() => setIsLoggedIn(false)} className="px-4 py-2 text-rose-500 hover:bg-rose-500/10 rounded-xl">
+                                    <i data-lucide="power" className="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </nav>
+                    </div>
+
+                    {/* Main Content - Centered */}
+                    <main className="center-layout px-4 sm:px-6 mt-10">
+                        {activeTab === 'dashboard' && (
+                            <div className="space-y-10 animate-in fade-in slide-in-from-bottom duration-700">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                                    {[
+                                        { label: 'Sales', val: stats.totalSales, col: 'border-emerald-500', icon: 'trending-up' },
+                                        { label: 'Expense', val: stats.totalExpense, col: 'border-rose-500', icon: 'trending-down' },
+                                        { label: 'Refund', val: stats.totalRefund, col: 'border-amber-500', icon: 'refresh-cw' },
+                                        { label: 'Profit', val: stats.netProfit, col: 'border-sky-500', icon: 'wallet' }
+                                    ].map((s, idx) => (
+                                        <div key={idx} className={`glass-card p-6 border-l-4 ${s.col}`}>
+                                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">{s.label}</p>
+                                            <div className="flex items-end justify-between">
+                                                <h3 className="text-2xl font-black">₹{s.val.toLocaleString()}</h3>
+                                                <i data-lucide={s.icon} className="w-4 h-4 opacity-30"></i>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                <div className="grid grid-cols-1 xl:grid-cols-12 gap-10 items-start">
+                                    {/* Entry Form */}
+                                    <div className="xl:col-span-4 no-print glass-card p-8 border-t-4 border-sky-500 shadow-xl">
+                                        <h4 className="text-xl font-black tracking-tight flex items-center gap-3 mb-8">
+                                            <i data-lucide="plus-square" className="text-sky-400"></i> New Record
+                                        </h4>
+                                        <form onSubmit={addRecord} className="space-y-4">
+                                            <div>
+                                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Date</label>
+                                                <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm focus:border-sky-500 outline-none" required />
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <input type="number" placeholder="Sales" value={formData.sales} onChange={e => setFormData({...formData, sales: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
+                                                <input type="number" placeholder="Expense" value={formData.expense} onChange={e => setFormData({...formData, expense: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <input type="number" placeholder="Refund" value={formData.refund} onChange={e => setFormData({...formData, refund: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
+                                                <input type="number" placeholder="Dues" value={formData.dues} onChange={e => setFormData({...formData, dues: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
+                                            </div>
+                                            <input type="number" placeholder="Bank Deposit" value={formData.bankDeposit} onChange={e => setFormData({...formData, bankDeposit: e.target.value})} className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
+                                            <button type="submit" className="w-full bg-sky-600 hover:bg-sky-500 py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all mt-4">Save Entry</button>
+                                        </form>
+                                    </div>
+
+                                    {/* Monthly Summary */}
+                                    <div className="xl:col-span-8 glass-card p-8 border-t-4 border-indigo-500 shadow-xl overflow-hidden">
+                                        <div className="flex justify-between items-center mb-8">
+                                            <h4 className="text-xl font-black tracking-tight">Monthly Performance</h4>
+                                            <div className="flex gap-2">
+                                                <button onClick={() => window.print()} className="p-2 bg-white/5 rounded-lg hover:bg-white/10"><i data-lucide="printer" className="w-4 h-4"></i></button>
+                                            </div>
+                                        </div>
+                                        <div className="overflow-x-auto custom-scrollbar">
+                                            <table className="w-full text-left">
+                                                <thead className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800">
+                                                    <tr>
+                                                        <th className="pb-4">Fiscal Period</th>
+                                                        <th className="pb-4 text-right">Sales</th>
+                                                        <th className="pb-4 text-right">Expense</th>
+                                                        <th className="pb-4 text-right">Net Profit</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-800/40">
+                                                    {monthlySummary.map(m => (
+                                                        <tr key={m.month} className="group hover:bg-white/5 transition-all">
+                                                            <td className="py-5 font-bold">{m.month}</td>
+                                                            <td className="py-5 text-right text-emerald-400 font-semibold">₹{m.sales.toLocaleString()}</td>
+                                                            <td className="py-5 text-right text-rose-400 font-semibold">₹{m.expenses.toLocaleString()}</td>
+                                                            <td className={`py-5 text-right font-black ${m.profit >= 0 ? 'text-sky-400' : 'text-rose-500'}`}>₹{m.profit.toLocaleString()}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'logs' && (
+                            <div className="glass-card overflow-hidden shadow-2xl border-t-4 border-emerald-500 animate-in slide-in-from-bottom duration-700">
+                                <div className="p-8 border-b border-slate-800 flex justify-between items-center">
+                                    <h4 className="text-2xl font-black tracking-tighter">Transaction Ledger</h4>
+                                    <i data-lucide="database" className="w-5 h-5 text-emerald-500"></i>
+                                </div>
+                                <div className="overflow-x-auto custom-scrollbar">
+                                    <table className="w-full text-left text-sm">
+                                        <thead className="bg-slate-900/40 text-slate-500 text-[10px] font-black uppercase tracking-widest">
+                                            <tr>
+                                                <th className="p-5 pl-8">Date</th>
+                                                <th className="p-5 text-right">Sales</th>
+                                                <th className="p-5 text-right">Expense</th>
+                                                <th className="p-5 text-right">Banked</th>
+                                                <th className="p-5 text-right">Cash</th>
+                                                <th className="p-5 text-right">P/L</th>
+                                                <th className="p-5 text-center pr-8">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-800/40">
+                                            {records.map(r => (
+                                                <tr key={r.id} className="hover:bg-white/5 transition-all">
+                                                    <td className="p-5 pl-8 font-bold">{r.date}</td>
+                                                    <td className="p-5 text-right font-semibold">₹{Number(r.sales).toLocaleString()}</td>
+                                                    <td className="p-5 text-right text-rose-400">₹{Number(r.expense).toLocaleString()}</td>
+                                                    <td className="p-5 text-right text-sky-400">₹{Number(r.bankDeposit).toLocaleString()}</td>
+                                                    <td className="p-5 text-right font-black">₹{Number(r.cashHand).toLocaleString()}</td>
+                                                    <td className={`p-5 text-right font-black ${r.dayPL >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>₹{r.dayPL.toLocaleString()}</td>
+                                                    <td className="p-5 text-center pr-8">
+                                                        {role === 'admin' && (
+                                                            <button onClick={() => setRecords(records.filter(rec => rec.id !== r.id))} className="text-slate-600 hover:text-rose-500 transition-all"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'admin' && role === 'admin' && (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-10 animate-in zoom-in duration-500">
+                                <div className="glass-card p-10 space-y-8 border-t-4 border-indigo-600 shadow-xl">
+                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="shield" className="text-indigo-400"></i> Keys</h3>
+                                    <div className="space-y-4">
+                                        <input type="text" value={staffPass} onChange={e => setStaffPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-indigo-400" placeholder="Staff Pass" />
+                                        <input type="text" value={adminPass} onChange={e => setAdminPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-rose-400" placeholder="Admin Pass" />
+                                        <button onClick={() => alert('Updated!')} className="w-full bg-indigo-600 py-4 rounded-xl font-black uppercase tracking-widest">Update Security</button>
+                                    </div>
+                                </div>
+                                <div className="glass-card p-10 space-y-8 border-t-4 border-rose-600 shadow-xl">
+                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="database-zap" className="text-rose-400"></i> Maintenance</h3>
+                                    <div className="space-y-4">
+                                        <button onClick={() => confirm('Purge logs?') && setRecords([])} className="w-full border-2 border-rose-500/30 text-rose-500 hover:bg-rose-500/10 py-4 rounded-xl font-black uppercase tracking-widest">Wipe Database</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
                 </div>
-                <h3 class="text-lg font-bold text-slate-900">Confirm Deletion</h3>
-                <p class="text-slate-500 text-sm mt-2">Are you sure you want to remove this entry? This action cannot be undone.</p>
-            </div>
-            <div class="flex border-t">
-                <button onclick="closeDeleteModal()" class="flex-1 p-4 font-bold text-slate-500 hover:bg-slate-50 transition-colors border-r">Cancel</button>
-                <button onclick="executeDelete()" class="flex-1 p-4 font-bold text-rose-600 hover:bg-rose-50 transition-colors">Delete Now</button>
-            </div>
-        </div>
-    </div>
+            );
+        };
 
-    <!-- Auth Screen -->
-    <div id="auth-screen" class="min-h-screen flex items-center justify-center bg-teal-900 p-4">
-        <div class="bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
-            <div class="bg-teal-700 p-8 text-center text-white">
-                <h2 class="text-2xl font-bold">Medical Pharmacy</h2>
-                <p class="text-teal-100 mt-2">Sign in to manage your financials</p>
-            </div>
-            <form onsubmit="handleAppLogin(event)" class="p-8 space-y-6">
-                <div>
-                    <label class="block text-sm font-semibold text-slate-700 mb-1">Username</label>
-                    <input type="text" id="login-user" required class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-sm font-semibold text-slate-700 mb-1">Password</label>
-                    <input type="password" id="login-pass" required class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-teal-500 outline-none">
-                </div>
-                <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 rounded-xl shadow-lg transition-all active:scale-95">Log In</button>
-            </form>
-        </div>
-    </div>
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
 
-    <!-- Navigation -->
-    <nav id="main-nav" class="bg-teal-800 text-white shadow-xl sticky top-0 z-50 hidden">
-        <div class="max-w-7xl mx-auto px-4 flex justify-between items-center h-16">
-            <div class="flex items-center gap-2 cursor-pointer" onclick="switchView('dashboard')">
-                <h1 class="text-xl font-bold">Medical Pharmacy</h1>
-            </div>
-            <div class="hidden md:flex items-center gap-4">
-                <button data-view="dashboard" onclick="switchView('dashboard')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Ledger</button>
-                <button data-view="reports" onclick="switchView('reports')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Reports</button>
-                <button data-view="admin" onclick="switchView('admin')" class="nav-btn px-4 py-2 rounded-xl text-sm font-semibold">Admin Panel</button>
-                <button onclick="logout()" class="text-teal-100 hover:text-white text-sm font-semibold ml-4">Logout</button>
-            </div>
-            <div class="md:hidden flex gap-3">
-                <button onclick="switchView('dashboard')" class="text-teal-100"><span class="text-lg">📊</span></button>
-                <button onclick="switchView('admin')" class="text-teal-100"><span class="text-lg">⚙️</span></button>
-            </div>
-        </div>
-    </nav>
-
-    <!-- Content Area -->
-    <main id="main-content" class="max-w-7xl mx-auto p-4 sm:p-6 mt-4">
-        <!-- JS Renders Content Here -->
-    </main>
-
-    <!-- Admin Power Badge -->
-    <div id="admin-badge" class="fixed bottom-6 right-6 bg-emerald-600 text-white px-4 py-2 rounded-full shadow-2xl hidden animate-bounce z-40">
-        <span class="text-sm font-bold">Admin Power Active</span>
-    </div>
-
+        window.onload = () => { if (window.lucide) window.lucide.createIcons(); };
+    </script>
 </body>
 </html>

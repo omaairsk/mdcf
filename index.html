@@ -3,18 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Medical Pharmacy | Financial Suite</title>
+    <title>Medical Pharmacy | Real-Time Financial Suite</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Supabase JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
         
         :root {
-            --glass: rgba(15, 23, 42, 0.7);
+            --glass: rgba(15, 23, 42, 0.75);
             --border: rgba(255, 255, 255, 0.1);
         }
 
@@ -53,20 +55,13 @@
             transform: translateY(-4px);
         }
 
-        .custom-scrollbar::-webkit-scrollbar {
-            width: 6px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-        }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; }
 
-        /* Centering Utilities */
         .center-layout {
             width: 100%;
             max-width: 1400px;
-            margin-left: auto;
-            margin-right: auto;
+            margin: 0 auto;
         }
 
         @media print {
@@ -75,199 +70,290 @@
             body { background: white; color: black; }
             .glass-card { border: 1px solid #ddd; background: white; color: black; box-shadow: none; }
         }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(56, 189, 248, 0.1);
+            border-left-color: #38bdf8;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div id="canvas-container"></div>
+    <!-- 
+        REQUIRED SQL SCHEMA (Supabase SQL Editor):
+        If you get Error 22P02, it means your 'date' column is 'bigint'. 
+        Run this to fix it:
+
+        -- 1. DROP IF WRONG TYPE OR CREATE TABLE
+        create table if not exists pharmacy_records (
+            id bigint primary key generated always as identity,
+            date text not null, -- MUST BE TEXT OR DATE
+            sales numeric default 0,
+            expense numeric default 0,
+            refund numeric default 0,
+            dues numeric default 0,
+            bank_deposit numeric default 0,
+            day_pl numeric default 0,
+            cash_hand numeric default 0,
+            created_at timestamptz default now()
+        );
+
+        -- 2. RESET POLICIES
+        alter table pharmacy_records enable row level security;
+        drop policy if exists "Allow All" on pharmacy_records;
+        create policy "Allow All" on pharmacy_records for all using (true) with check (true);
+
+        -- 3. ENABLE REALTIME
+        alter publication supabase_realtime add table pharmacy_records;
+    -->
+    <div id="canvas-container-root"></div>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
-        // --- Enhanced 3D Background ---
+        // --- Supabase Config ---
+        const SUPABASE_URL = "https://uoajxfqciabzlpiqxvup.supabase.co";
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVvYWp4ZnFjaWFiemxwaXF4dnVwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA2NTYxMDQsImV4cCI6MjA4NjIzMjEwNH0.CQalWc4mIWsVPJLt-Zgd2i80fZtlfGPW0jpVbb8GBso";
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // --- 3D Molecule Background ---
         const ThreeBackground = () => {
             const containerRef = useRef();
-
             useEffect(() => {
+                const currentContainer = containerRef.current;
+                if (!currentContainer) return;
                 const scene = new THREE.Scene();
                 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
                 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.setPixelRatio(window.devicePixelRatio);
-                containerRef.current.appendChild(renderer.domElement);
-
-                // Lighting for actual 3D effect
-                const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-                scene.add(ambientLight);
-                const pointLight = new THREE.PointLight(0x38bdf8, 2);
-                pointLight.position.set(20, 20, 20);
-                scene.add(pointLight);
-
-                // 3D Objects (Spheres/Molecules)
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                currentContainer.appendChild(renderer.domElement);
+                const light = new THREE.PointLight(0x0ea5e9, 2);
+                light.position.set(20, 20, 20);
+                scene.add(new THREE.AmbientLight(0xffffff, 0.6), light);
                 const group = new THREE.Group();
-                const geometry = new THREE.SphereGeometry(0.4, 16, 16);
-                const material = new THREE.MeshPhongMaterial({ 
-                    color: 0x0ea5e9, 
-                    shininess: 100,
-                    transparent: true,
-                    opacity: 0.6
-                });
-
-                for (let i = 0; i < 60; i++) {
+                const geometry = new THREE.IcosahedronGeometry(0.5, 0);
+                const material = new THREE.MeshPhongMaterial({ color: 0x38bdf8, wireframe: true });
+                for (let i = 0; i < 40; i++) {
                     const mesh = new THREE.Mesh(geometry, material);
-                    mesh.position.set(
-                        (Math.random() - 0.5) * 60,
-                        (Math.random() - 0.5) * 60,
-                        (Math.random() - 0.5) * 40
-                    );
-                    mesh.scale.setScalar(Math.random() * 2 + 0.5);
+                    mesh.position.set((Math.random() - 0.5) * 50, (Math.random() - 0.5) * 50, (Math.random() - 0.5) * 30);
                     group.add(mesh);
                 }
                 scene.add(group);
-
-                // Starfield background depth
-                const starGeo = new THREE.BufferGeometry();
-                const starPos = new Float32Array(3000);
-                for(let i=0; i<3000; i++) starPos[i] = (Math.random() - 0.5) * 200;
-                starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
-                const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1 });
-                const stars = new THREE.Points(starGeo, starMat);
-                scene.add(stars);
-
-                camera.position.z = 30;
-
+                camera.position.z = 25;
                 let mouseX = 0, mouseY = 0;
-                const onMouseMove = (e) => {
-                    mouseX = (e.clientX - window.innerWidth / 2) * 0.02;
-                    mouseY = (e.clientY - window.innerHeight / 2) * 0.02;
+                const onMove = (e) => {
+                    mouseX = (e.clientX - window.innerWidth / 2) * 0.005;
+                    mouseY = (e.clientY - window.innerHeight / 2) * 0.005;
                 };
-
+                window.addEventListener('mousemove', onMove);
+                let animId;
                 const animate = () => {
-                    requestAnimationFrame(animate);
-                    group.rotation.y += 0.002;
-                    group.rotation.x += 0.001;
-                    stars.rotation.y -= 0.0005;
-
+                    animId = requestAnimationFrame(animate);
+                    group.rotation.y += 0.001;
                     camera.position.x += (mouseX - camera.position.x) * 0.05;
                     camera.position.y += (-mouseY - camera.position.y) * 0.05;
                     camera.lookAt(scene.position);
-
                     renderer.render(scene, camera);
                 };
                 animate();
-
-                window.addEventListener('mousemove', onMouseMove);
-                const handleResize = () => {
+                const onResize = () => {
                     camera.aspect = window.innerWidth / window.innerHeight;
                     camera.updateProjectionMatrix();
                     renderer.setSize(window.innerWidth, window.innerHeight);
                 };
-                window.addEventListener('resize', handleResize);
-
+                window.addEventListener('resize', onResize);
                 return () => {
-                    window.removeEventListener('mousemove', onMouseMove);
-                    window.removeEventListener('resize', handleResize);
-                    containerRef.current?.removeChild(renderer.domElement);
+                    cancelAnimationFrame(animId);
+                    window.removeEventListener('mousemove', onMove);
+                    window.removeEventListener('resize', onResize);
+                    if (currentContainer && renderer.domElement.parentNode === currentContainer) {
+                        currentContainer.removeChild(renderer.domElement);
+                    }
+                    geometry.dispose();
+                    material.dispose();
+                    renderer.dispose();
                 };
             }, []);
-
             return <div ref={containerRef} id="canvas-container" />;
         };
 
-        // --- Main App Component ---
         const App = () => {
+            // -- State --
             const [role, setRole] = useState('staff'); 
             const [isLoggedIn, setIsLoggedIn] = useState(false);
             const [activeTab, setActiveTab] = useState('dashboard');
-            const [records, setRecords] = useState(() => {
-                const saved = localStorage.getItem('pharmacy_records_v3');
-                return saved ? JSON.parse(saved) : [];
-            });
-            // Updated access keys
-            const [staffPass, setStaffPass] = useState('mdc@123');
-            const [adminPass, setAdminPass] = useState('Fadmin');
+            const [records, setRecords] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [dbError, setDbError] = useState(null);
+            const [accessKey, setAccessKey] = useState('');
+            const [isSaving, setIsSaving] = useState(false);
+
+            const staffPass = 'mdc@123';
+            const adminPass = 'Fadmin';
 
             const [formData, setFormData] = useState({
                 date: new Date().toISOString().split('T')[0],
                 sales: '', expense: '', refund: '', dues: '', bankDeposit: ''
             });
 
-            useEffect(() => {
-                localStorage.setItem('pharmacy_records_v3', JSON.stringify(records));
-                if (window.lucide) window.lucide.createIcons();
-            }, [records, isLoggedIn, activeTab]);
+            // -- Database Handlers --
+            const fetchRecords = useCallback(async () => {
+                const { data, error } = await supabaseClient
+                    .from('pharmacy_records')
+                    .select('*');
+                
+                if (error) {
+                    setDbError(error.message);
+                } else {
+                    setDbError(null);
+                    const mapped = (data || []).map(r => ({
+                        id: r.id,
+                        date: String(r.date || ''),
+                        sales: Number(r.sales) || 0,
+                        expense: Number(r.expense) || 0,
+                        refund: Number(r.refund) || 0,
+                        dues: Number(r.dues) || 0,
+                        bankDeposit: Number(r.bank_deposit) || 0,
+                        dayPL: Number(r.day_pl) || 0,
+                        cashHand: Number(r.cash_hand) || 0
+                    })).sort((a, b) => b.date.localeCompare(a.date));
+                    setRecords(mapped);
+                }
+                setLoading(false);
+            }, []);
 
+            useEffect(() => {
+                fetchRecords();
+                const sub = supabaseClient
+                    .channel('db_sync')
+                    .on('postgres_changes', { event: '*', schema: 'public', table: 'pharmacy_records' }, fetchRecords)
+                    .subscribe();
+                return () => supabaseClient.removeChannel(sub);
+            }, [fetchRecords]);
+
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [records, isLoggedIn, activeTab]);
+
+            // -- Logic --
             const stats = useMemo(() => {
-                const totalSales = records.reduce((acc, r) => acc + (Number(r.sales) || 0), 0);
-                const totalExpense = records.reduce((acc, r) => acc + (Number(r.expense) || 0), 0);
-                const totalRefund = records.reduce((acc, r) => acc + (Number(r.refund) || 0), 0);
-                return { totalSales, totalExpense, totalRefund, netProfit: totalSales - totalExpense - totalRefund };
+                const s = records.reduce((acc, r) => ({
+                    sales: acc.sales + r.sales,
+                    expense: acc.expense + r.expense,
+                    refund: acc.refund + r.refund
+                }), { sales: 0, expense: 0, refund: 0 });
+                return { ...s, netProfit: s.sales - s.expense - s.refund };
             }, [records]);
 
             const monthlySummary = useMemo(() => {
                 const groups = {};
                 records.forEach(r => {
-                    const month = r.date.substring(0, 7);
-                    if (!groups[month]) groups[month] = { month, sales: 0, expenses: 0, profit: 0 };
-                    groups[month].sales += (Number(r.sales) || 0);
-                    groups[month].expenses += (Number(r.expense) || 0);
-                    groups[month].profit += ((Number(r.sales) || 0) - (Number(r.expense) || 0) - (Number(r.refund) || 0));
+                    const m = r.date ? r.date.substring(0, 7) : 'NA';
+                    if (!groups[m]) groups[m] = { m, s: 0, e: 0, p: 0 };
+                    groups[m].s += r.sales;
+                    groups[m].e += r.expense;
+                    groups[m].p += (r.sales - r.expense - r.refund);
                 });
-                return Object.values(groups).sort((a, b) => b.month.localeCompare(a.month));
+                return Object.values(groups).sort((a, b) => b.m.localeCompare(a.m));
             }, [records]);
 
-            const addRecord = (e) => {
-                e.preventDefault();
-                const dayPL = Number(formData.sales) - Number(formData.expense) - Number(formData.refund);
-                const cashHand = Number(formData.sales) - Number(formData.bankDeposit) - Number(formData.dues) - Number(formData.refund);
-                const newRecord = { ...formData, id: Date.now(), dayPL, cashHand };
-                setRecords([newRecord, ...records]);
-                setFormData({ date: new Date().toISOString().split('T')[0], sales: '', expense: '', refund: '', dues: '', bankDeposit: '' });
-            };
+            const addRecord = async (e) => {
+                if (e) e.preventDefault();
+                if (isSaving) return;
+                
+                setIsSaving(true);
+                const s = Number(formData.sales) || 0;
+                const ex = Number(formData.expense) || 0;
+                const rf = Number(formData.refund) || 0;
+                const d = Number(formData.dues) || 0;
+                const b = Number(formData.bankDeposit) || 0;
 
-            const handleLogin = (selectedRole, pass) => {
-                if ((selectedRole === 'admin' && pass === adminPass) || (selectedRole === 'staff' && pass === staffPass)) {
-                    setIsLoggedIn(true);
-                } else {
-                    alert("Authentication Failed");
+                const payload = { 
+                    date: String(formData.date), 
+                    sales: s, 
+                    expense: ex, 
+                    refund: rf, 
+                    dues: d, 
+                    bank_deposit: b, 
+                    day_pl: s - ex - rf, 
+                    cash_hand: s - b - d - rf 
+                };
+
+                try {
+                    const { error } = await supabaseClient
+                        .from('pharmacy_records')
+                        .insert([payload]);
+
+                    if (error) {
+                        console.error("Supabase Save Error:", error);
+                        // Fix for error 22P02: specifically handling bigint type mismatch for 'date'
+                        if (error.code === '22P02') {
+                            alert("Critical Database Error (22P02): The 'date' column in your Supabase table is set to 'bigint' but should be 'text'. Please change the column type in your Supabase project settings.");
+                        } else {
+                            alert(`Cloud Save Failed: ${error.message}`);
+                        }
+                    } else {
+                        setFormData({ date: new Date().toISOString().split('T')[0], sales: '', expense: '', refund: '', dues: '', bankDeposit: '' });
+                        fetchRecords();
+                    }
+                } catch (err) {
+                    console.error("Unexpected Error:", err);
+                } finally {
+                    setIsSaving(false);
                 }
             };
 
+            const handleDelete = async (id) => {
+                if (role !== 'admin' || !confirm('Permanently delete record from cloud?')) return;
+                const { error } = await supabaseClient.from('pharmacy_records').delete().eq('id', id);
+                if (error) alert(`Delete failed: ${error.message}`);
+                fetchRecords();
+            };
+
+            const handleLogin = (e) => {
+                if (e && e.preventDefault) e.preventDefault();
+                if ((role === 'admin' && accessKey === adminPass) || (role === 'staff' && accessKey === staffPass)) {
+                    setIsLoggedIn(true);
+                    setAccessKey('');
+                } else {
+                    alert("Invalid Access Key");
+                }
+            };
+
+            const fmt = (v) => (Number(v) || 0).toLocaleString();
+
+            // -- Screens --
             if (!isLoggedIn) {
                 return (
-                    <div className="flex items-center justify-center min-h-screen p-6 w-full">
+                    <div className="flex items-center justify-center min-h-screen p-6 w-full relative">
                         <ThreeBackground />
                         <div className="glass-card p-10 w-full max-w-md space-y-8 animate-in fade-in zoom-in duration-500">
                             <div className="text-center">
                                 <div className="inline-block p-4 bg-sky-500/20 rounded-2xl mb-4 border border-sky-500/30">
                                     <i data-lucide="shield-check" className="w-10 h-10 text-sky-400"></i>
                                 </div>
-                                <h1 className="text-4xl font-black tracking-tighter text-white uppercase">MEDICAL <span className="text-sky-500">PHARMACY</span></h1>
-                                <p className="text-slate-400 text-xs mt-2 font-bold tracking-widest uppercase opacity-60">Pharmacy Management Terminal</p>
+                                <h1 className="text-3xl font-black tracking-tighter text-white uppercase">MEDICAL <span className="text-sky-500">PHARMACY</span></h1>
+                                <p className="text-slate-400 text-[10px] mt-2 font-bold tracking-widest uppercase">Secured Financial Terminal</p>
                             </div>
-                            <div className="space-y-6">
+                            <form className="space-y-6" onSubmit={handleLogin}>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <button onClick={() => setRole('staff')} className={`flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${role === 'staff' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'border-slate-800 text-slate-500'}`}>
-                                        <i data-lucide="users" className="w-4 h-4"></i> Staff
-                                    </button>
-                                    <button onClick={() => setRole('admin')} className={`flex items-center justify-center gap-2 py-3 rounded-xl border transition-all ${role === 'admin' ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400' : 'border-slate-800 text-slate-500'}`}>
-                                        <i data-lucide="key" className="w-4 h-4"></i> Admin
-                                    </button>
+                                    <button type="button" onClick={() => setRole('staff')} className={`py-3 rounded-xl border transition-all font-bold text-xs uppercase ${role === 'staff' ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'border-slate-800 text-slate-500'}`}>Staff</button>
+                                    <button type="button" onClick={() => setRole('admin')} className={`py-3 rounded-xl border transition-all font-bold text-xs uppercase ${role === 'admin' ? 'bg-indigo-500/20 border-indigo-500 text-indigo-400' : 'border-slate-800 text-slate-500'}`}>Admin</button>
                                 </div>
                                 <input 
                                     type="password" 
-                                    id="passInput"
-                                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-white focus:outline-none focus:ring-2 focus:ring-sky-500/40 text-center tracking-widest"
-                                    placeholder="Enter Access Key"
-                                    onKeyDown={(e) => e.key === 'Enter' && handleLogin(role, e.target.value)}
+                                    value={accessKey}
+                                    onChange={(e) => setAccessKey(e.target.value)}
+                                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-white text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-sky-500/30" 
+                                    placeholder="ENTER ACCESS KEY" 
                                 />
-                                <button 
-                                    onClick={() => handleLogin(role, document.getElementById('passInput').value)}
-                                    className="w-full bg-sky-600 hover:bg-sky-500 text-white font-bold py-4 rounded-xl shadow-lg transition-all flex items-center justify-center gap-3"
-                                >
-                                    Log In <i data-lucide="chevron-right" className="w-4 h-4"></i>
-                                </button>
-                            </div>
+                                <button type="submit" className="w-full bg-sky-600 hover:bg-sky-500 py-4 rounded-xl font-bold uppercase text-xs tracking-widest shadow-lg transition-all">Authorize Session</button>
+                            </form>
+                            <p className="text-center text-[10px] text-slate-600 uppercase font-bold tracking-widest">Real-Time Cloud Linked</p>
                         </div>
                     </div>
                 );
@@ -276,71 +362,47 @@
             return (
                 <div className="min-h-screen pb-20">
                     <ThreeBackground />
-                    
-                    {/* Navigation - Centered */}
-                    <div className="center-layout pt-6 px-4 sm:px-6">
+                    <div className="center-layout pt-6 px-4">
                         <nav className="no-print glass-card p-4 flex flex-wrap items-center justify-between gap-6 shadow-2xl sticky top-6 z-50">
                             <div className="flex items-center gap-4">
-                                <div className={`p-3 rounded-2xl ${role === 'admin' ? 'bg-indigo-600' : 'bg-emerald-600'}`}>
-                                    <i data-lucide="activity" className="w-6 h-6 text-white"></i>
-                                </div>
+                                <div className={`p-3 rounded-2xl ${role === 'admin' ? 'bg-indigo-600' : 'bg-emerald-600'}`}><i data-lucide="activity" className="w-6 h-6 text-white"></i></div>
                                 <div>
                                     <h2 className="font-extrabold text-xl tracking-tighter uppercase">MEDICAL PHARMACY</h2>
-                                    <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">{role} Panel</p>
+                                    <p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">{role} Portal • Operational</p>
                                 </div>
                             </div>
-
-                            <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl border border-white/5">
-                                {['dashboard', 'logs', 'admin'].map(tab => (
-                                    (tab !== 'admin' || role === 'admin') && (
-                                        <button 
-                                            key={tab}
-                                            onClick={() => setActiveTab(tab)} 
-                                            className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${activeTab === tab ? 'bg-white/10 text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
-                                        >
-                                            {tab}
-                                        </button>
-                                    )
-                                ))}
-                                <button onClick={() => setIsLoggedIn(false)} className="px-4 py-2 text-rose-500 hover:bg-rose-500/10 rounded-xl">
-                                    <i data-lucide="power" className="w-4 h-4"></i>
-                                </button>
+                            <div className="flex items-center gap-2 bg-white/5 p-1 rounded-2xl">
+                                {['dashboard', 'logs', 'admin'].map(t => (t !== 'admin' || role === 'admin') && <button key={t} onClick={() => setActiveTab(t)} className={`px-6 py-2 rounded-xl text-xs font-bold uppercase transition-all ${activeTab === t ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'}`}>{t}</button>)}
+                                <button onClick={() => setIsLoggedIn(false)} className="px-4 py-2 text-rose-500 hover:bg-rose-500/10 rounded-xl transition-colors"><i data-lucide="power" className="w-4 h-4"></i></button>
                             </div>
                         </nav>
                     </div>
 
-                    {/* Main Content - Centered */}
-                    <main className="center-layout px-4 sm:px-6 mt-10">
-                        {activeTab === 'dashboard' && (
-                            <div className="space-y-10 animate-in fade-in slide-in-from-bottom duration-700">
+                    <main className="center-layout px-4 mt-10">
+                        {dbError && <div className="mb-6 p-4 bg-rose-500/20 border border-rose-500/30 rounded-xl text-rose-400 text-xs font-bold uppercase tracking-widest animate-pulse">Sync Warning: {dbError}</div>}
+
+                        {loading ? (
+                            <div className="flex flex-col items-center justify-center py-20 text-sky-400"><div className="spinner mb-4"></div><p className="font-bold tracking-widest uppercase text-xs">Syncing Terminal...</p></div>
+                        ) : activeTab === 'dashboard' ? (
+                            <div className="space-y-10 animate-in fade-in duration-700">
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                                     {[
-                                        { label: 'Sales', val: stats.totalSales, col: 'border-emerald-500', icon: 'trending-up' },
-                                        { label: 'Expense', val: stats.totalExpense, col: 'border-rose-500', icon: 'trending-down' },
-                                        { label: 'Refund', val: stats.totalRefund, col: 'border-amber-500', icon: 'refresh-cw' },
-                                        { label: 'Profit', val: stats.netProfit, col: 'border-sky-500', icon: 'wallet' }
+                                        { l: 'Sales', v: stats.sales, c: 'border-emerald-500', i: 'trending-up' },
+                                        { l: 'Expense', v: stats.expense, c: 'border-rose-500', i: 'trending-down' },
+                                        { l: 'Refund', v: stats.refund, c: 'border-amber-500', i: 'refresh-cw' },
+                                        { l: 'Profit', v: stats.netProfit, c: 'border-sky-500', i: 'wallet' }
                                     ].map((s, idx) => (
-                                        <div key={idx} className={`glass-card p-6 border-l-4 ${s.col}`}>
-                                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">{s.label}</p>
-                                            <div className="flex items-end justify-between">
-                                                <h3 className="text-2xl font-black">₹{s.val.toLocaleString()}</h3>
-                                                <i data-lucide={s.icon} className="w-4 h-4 opacity-30"></i>
-                                            </div>
+                                        <div key={idx} className={`glass-card p-6 border-l-4 ${s.c}`}>
+                                            <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">{s.l}</p>
+                                            <div className="flex items-end justify-between"><h3 className="text-2xl font-black">₹{fmt(s.v)}</h3><i data-lucide={s.i} className="w-4 h-4 opacity-30"></i></div>
                                         </div>
                                     ))}
                                 </div>
-
-                                <div className="grid grid-cols-1 xl:grid-cols-12 gap-10 items-start">
-                                    {/* Entry Form */}
+                                <div className="grid grid-cols-1 xl:grid-cols-12 gap-10">
                                     <div className="xl:col-span-4 no-print glass-card p-8 border-t-4 border-sky-500 shadow-xl">
-                                        <h4 className="text-xl font-black tracking-tight flex items-center gap-3 mb-8">
-                                            <i data-lucide="plus-square" className="text-sky-400"></i> New Record
-                                        </h4>
+                                        <h4 className="text-xl font-black tracking-tight mb-8 uppercase flex items-center gap-2"><i data-lucide="plus-circle" className="text-sky-400"></i> New Entry</h4>
                                         <form onSubmit={addRecord} className="space-y-4">
-                                            <div>
-                                                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Date</label>
-                                                <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm focus:border-sky-500 outline-none" required />
-                                            </div>
+                                            <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm focus:border-sky-500 outline-none" required />
                                             <div className="grid grid-cols-2 gap-4">
                                                 <input type="number" placeholder="Sales" value={formData.sales} onChange={e => setFormData({...formData, sales: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
                                                 <input type="number" placeholder="Expense" value={formData.expense} onChange={e => setFormData({...formData, expense: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
@@ -350,35 +412,23 @@
                                                 <input type="number" placeholder="Dues" value={formData.dues} onChange={e => setFormData({...formData, dues: e.target.value})} className="bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
                                             </div>
                                             <input type="number" placeholder="Bank Deposit" value={formData.bankDeposit} onChange={e => setFormData({...formData, bankDeposit: e.target.value})} className="w-full bg-slate-950/50 border border-slate-800 rounded-xl p-3 text-sm outline-none" />
-                                            <button type="submit" className="w-full bg-sky-600 hover:bg-sky-500 py-4 rounded-xl font-black text-xs uppercase tracking-widest transition-all mt-4">Save Entry</button>
+                                            <button type="submit" disabled={isSaving} className={`w-full bg-sky-600 hover:bg-sky-500 py-4 rounded-xl font-bold uppercase text-xs tracking-widest transition-all ${isSaving ? 'opacity-50' : ''}`}>
+                                                {isSaving ? 'Syncing...' : 'Submit to Cloud'}
+                                            </button>
                                         </form>
                                     </div>
-
-                                    {/* Monthly Summary */}
                                     <div className="xl:col-span-8 glass-card p-8 border-t-4 border-indigo-500 shadow-xl overflow-hidden">
-                                        <div className="flex justify-between items-center mb-8">
-                                            <h4 className="text-xl font-black tracking-tight">Monthly Performance</h4>
-                                            <div className="flex gap-2">
-                                                <button onClick={() => window.print()} className="p-2 bg-white/5 rounded-lg hover:bg-white/10"><i data-lucide="printer" className="w-4 h-4"></i></button>
-                                            </div>
-                                        </div>
+                                        <div className="flex justify-between items-center mb-8"><h4 className="text-xl font-black uppercase">Monthly History</h4><button onClick={() => window.print()} className="p-2 bg-white/5 rounded-lg hover:bg-white/10 transition-colors"><i data-lucide="printer" className="w-4 h-4"></i></button></div>
                                         <div className="overflow-x-auto custom-scrollbar">
                                             <table className="w-full text-left">
-                                                <thead className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800">
-                                                    <tr>
-                                                        <th className="pb-4">Fiscal Period</th>
-                                                        <th className="pb-4 text-right">Sales</th>
-                                                        <th className="pb-4 text-right">Expense</th>
-                                                        <th className="pb-4 text-right">Net Profit</th>
-                                                    </tr>
-                                                </thead>
+                                                <thead className="text-[10px] font-black text-slate-500 uppercase tracking-widest border-b border-slate-800"><tr><th className="pb-4">Fiscal Month</th><th className="pb-4 text-right">Sales</th><th className="pb-4 text-right">Expense</th><th className="pb-4 text-right">Profit</th></tr></thead>
                                                 <tbody className="divide-y divide-slate-800/40">
                                                     {monthlySummary.map(m => (
-                                                        <tr key={m.month} className="group hover:bg-white/5 transition-all">
-                                                            <td className="py-5 font-bold">{m.month}</td>
-                                                            <td className="py-5 text-right text-emerald-400 font-semibold">₹{m.sales.toLocaleString()}</td>
-                                                            <td className="py-5 text-right text-rose-400 font-semibold">₹{m.expenses.toLocaleString()}</td>
-                                                            <td className={`py-5 text-right font-black ${m.profit >= 0 ? 'text-sky-400' : 'text-rose-500'}`}>₹{m.profit.toLocaleString()}</td>
+                                                        <tr key={m.m} className="group hover:bg-white/5">
+                                                            <td className="py-5 font-bold">{m.m}</td>
+                                                            <td className="py-5 text-right text-emerald-400">₹{fmt(m.s)}</td>
+                                                            <td className="py-5 text-right text-rose-400">₹{fmt(m.e)}</td>
+                                                            <td className={`py-5 text-right font-black ${m.p >= 0 ? 'text-sky-400' : 'text-rose-500'}`}>₹{fmt(m.p)}</td>
                                                         </tr>
                                                     ))}
                                                 </tbody>
@@ -387,67 +437,46 @@
                                     </div>
                                 </div>
                             </div>
-                        )}
-
-                        {activeTab === 'logs' && (
+                        ) : activeTab === 'logs' ? (
                             <div className="glass-card overflow-hidden shadow-2xl border-t-4 border-emerald-500 animate-in slide-in-from-bottom duration-700">
-                                <div className="p-8 border-b border-slate-800 flex justify-between items-center">
-                                    <h4 className="text-2xl font-black tracking-tighter">Transaction Ledger</h4>
-                                    <i data-lucide="database" className="w-5 h-5 text-emerald-500"></i>
-                                </div>
+                                <div className="p-8 border-b border-slate-800 flex justify-between items-center"><h4 className="text-2xl font-black tracking-tighter uppercase">Cloud activity ledger</h4><i data-lucide="database" className="w-5 h-5 text-emerald-500"></i></div>
                                 <div className="overflow-x-auto custom-scrollbar">
                                     <table className="w-full text-left text-sm">
-                                        <thead className="bg-slate-900/40 text-slate-500 text-[10px] font-black uppercase tracking-widest">
-                                            <tr>
-                                                <th className="p-5 pl-8">Date</th>
-                                                <th className="p-5 text-right">Sales</th>
-                                                <th className="p-5 text-right">Expense</th>
-                                                <th className="p-5 text-right">Banked</th>
-                                                <th className="p-5 text-right">Cash</th>
-                                                <th className="p-5 text-right">P/L</th>
-                                                <th className="p-5 text-center pr-8">Actions</th>
-                                            </tr>
-                                        </thead>
+                                        <thead className="bg-slate-900/40 text-slate-500 text-[10px] font-black uppercase tracking-widest"><tr><th className="p-5 pl-8">Date</th><th className="p-5 text-right">Sales</th><th className="p-5 text-right">Expense</th><th className="p-5 text-right">Banked</th><th className="p-5 text-right">Cash</th><th className="p-5 text-right">P/L</th><th className="p-5 text-center pr-8">Actions</th></tr></thead>
                                         <tbody className="divide-y divide-slate-800/40">
                                             {records.map(r => (
                                                 <tr key={r.id} className="hover:bg-white/5 transition-all">
-                                                    <td className="p-5 pl-8 font-bold">{r.date}</td>
-                                                    <td className="p-5 text-right font-semibold">₹{Number(r.sales).toLocaleString()}</td>
-                                                    <td className="p-5 text-right text-rose-400">₹{Number(r.expense).toLocaleString()}</td>
-                                                    <td className="p-5 text-right text-sky-400">₹{Number(r.bankDeposit).toLocaleString()}</td>
-                                                    <td className="p-5 text-right font-black">₹{Number(r.cashHand).toLocaleString()}</td>
-                                                    <td className={`p-5 text-right font-black ${r.dayPL >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>₹{r.dayPL.toLocaleString()}</td>
-                                                    <td className="p-5 text-center pr-8">
-                                                        {role === 'admin' && (
-                                                            <button onClick={() => setRecords(records.filter(rec => rec.id !== r.id))} className="text-slate-600 hover:text-rose-500 transition-all"><i data-lucide="trash-2" className="w-4 h-4"></i></button>
-                                                        )}
-                                                    </td>
+                                                    <td className="p-5 pl-8 font-bold">{r.date || '---'}</td>
+                                                    <td className="p-5 text-right">₹{fmt(r.sales)}</td>
+                                                    <td className="p-5 text-right text-rose-400">₹{fmt(r.expense)}</td>
+                                                    <td className="p-5 text-right text-sky-400">₹{fmt(r.bankDeposit)}</td>
+                                                    <td className="p-5 text-right font-black text-white">₹{fmt(r.cashHand)}</td>
+                                                    <td className={`p-5 text-right font-black ${r.dayPL >= 0 ? 'text-emerald-400' : 'text-rose-500'}`}>₹{fmt(r.dayPL)}</td>
+                                                    <td className="p-5 text-center pr-8">{role === 'admin' && <button onClick={() => handleDelete(r.id)} className="text-slate-600 hover:text-rose-500 p-2 rounded-lg hover:bg-rose-500/10 transition-all"><i data-lucide="trash-2" className="w-4 h-4"></i></button>}</td>
                                                 </tr>
                                             ))}
+                                            {records.length === 0 && (
+                                                <tr><td colSpan="7" className="p-10 text-center text-slate-600 font-bold uppercase tracking-widest text-xs">No records synchronized yet.</td></tr>
+                                            )}
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
-                        )}
-
-                        {activeTab === 'admin' && role === 'admin' && (
+                        ) : activeTab === 'admin' && role === 'admin' ? (
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-10 animate-in zoom-in duration-500">
                                 <div className="glass-card p-10 space-y-8 border-t-4 border-indigo-600 shadow-xl">
-                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="shield" className="text-indigo-400"></i> Keys</h3>
-                                    <div className="space-y-4">
-                                        <input type="text" value={staffPass} onChange={e => setStaffPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-indigo-400" placeholder="Staff Pass" />
-                                        <input type="text" value={adminPass} onChange={e => setAdminPass(e.target.value)} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-rose-400" placeholder="Admin Pass" />
-                                        <button onClick={() => alert('Updated!')} className="w-full bg-indigo-600 py-4 rounded-xl font-black uppercase tracking-widest">Update Security</button>
+                                    <h3 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><i data-lucide="shield" className="text-indigo-400"></i> Local Keys</h3>
+                                    <div className="p-4 bg-white/5 border border-white/5 rounded-xl space-y-2">
+                                        <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">STAFF: <span className="text-emerald-400 font-mono tracking-normal">{staffPass}</span></p>
+                                        <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">ADMIN: <span className="text-indigo-400 font-mono tracking-normal">{adminPass}</span></p>
                                     </div>
                                 </div>
                                 <div className="glass-card p-10 space-y-8 border-t-4 border-rose-600 shadow-xl">
-                                    <h3 className="text-2xl font-black flex items-center gap-3"><i data-lucide="database-zap" className="text-rose-400"></i> Maintenance</h3>
-                                    <div className="space-y-4">
-                                        <button onClick={() => confirm('Purge logs?') && setRecords([])} className="w-full border-2 border-rose-500/30 text-rose-500 hover:bg-rose-500/10 py-4 rounded-xl font-black uppercase tracking-widest">Wipe Database</button>
-                                    </div>
+                                    <h3 className="text-2xl font-black uppercase tracking-tighter flex items-center gap-3"><i data-lucide="database-zap" className="text-rose-400"></i> Project Panel</h3>
+                                    <button onClick={() => window.open('https://supabase.com/dashboard/project/uoajxfqciabzlpiqxvup/editor', '_blank')} className="w-full bg-slate-800 hover:bg-slate-700 py-4 rounded-xl font-bold uppercase text-xs tracking-widest transition-all">Supabase Console</button>
                                 </div>
                             </div>
-                        )}
+                        ) : null}
                     </main>
                 </div>
             );
@@ -455,7 +484,6 @@
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-
         window.onload = () => { if (window.lucide) window.lucide.createIcons(); };
     </script>
 </body>
